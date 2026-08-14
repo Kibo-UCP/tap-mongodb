@@ -98,49 +98,52 @@ def sync_collection(client, stream, state, projection):
     LOGGER.info(query_message)
 
 
-    with collection.find({'_id': find_filter},
-                         projection,
-                         sort=[("_id", pymongo.ASCENDING)]) as cursor:
-        rows_saved = 0
-        
-        start_time = time.time()
+    def build_cursor():
+        return collection.find({'_id': find_filter},
+                               projection,
+                               sort=[("_id", pymongo.ASCENDING)])
 
-        schema = {"type": "object", "properties": {}}
-        for row in cursor:
-            rows_saved += 1
+    rows_saved = 0
 
-            schema_build_start_time = time.time()
-            if common.row_to_schema(schema, row):
-                singer.write_message(singer.SchemaMessage(
-                    stream=common.calculate_destination_stream_name(stream),
-                    schema=schema,
-                    key_properties=['_id']))
-                common.SCHEMA_COUNT[stream['tap_stream_id']] += 1
-            common.SCHEMA_TIMES[stream['tap_stream_id']] += time.time() - schema_build_start_time
+    start_time = time.time()
 
-            record_message = common.row_to_singer_record(stream,
-                                                         row,
-                                                         stream_version,
-                                                         utils.now())
+    schema = {"type": "object", "properties": {}}
+    for row in common.fetch_rows_with_invalid_bson_retry(
+            build_cursor, tap_stream_id, 'last_id_fetched', last_id_fetched):
+        rows_saved += 1
 
-            singer.write_message(record_message)
+        schema_build_start_time = time.time()
+        if common.row_to_schema(schema, row):
+            singer.write_message(singer.SchemaMessage(
+                stream=common.calculate_destination_stream_name(stream),
+                schema=schema,
+                key_properties=['_id']))
+            common.SCHEMA_COUNT[stream['tap_stream_id']] += 1
+        common.SCHEMA_TIMES[stream['tap_stream_id']] += time.time() - schema_build_start_time
 
-            state = singer.write_bookmark(state,
-                                          stream['tap_stream_id'],
-                                          'last_id_fetched',
-                                          common.class_to_string(row['_id'],
-                                                                 row['_id'].__class__.__name__))
-            state = singer.write_bookmark(state,
-                                          stream['tap_stream_id'],
-                                          'last_id_fetched_type',
-                                          row['_id'].__class__.__name__)
+        record_message = common.row_to_singer_record(stream,
+                                                     row,
+                                                     stream_version,
+                                                     utils.now())
+
+        singer.write_message(record_message)
+
+        state = singer.write_bookmark(state,
+                                      stream['tap_stream_id'],
+                                      'last_id_fetched',
+                                      common.class_to_string(row['_id'],
+                                                             row['_id'].__class__.__name__))
+        state = singer.write_bookmark(state,
+                                      stream['tap_stream_id'],
+                                      'last_id_fetched_type',
+                                      row['_id'].__class__.__name__)
 
 
-            if rows_saved % common.UPDATE_BOOKMARK_PERIOD == 0:
-                singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+        if rows_saved % common.UPDATE_BOOKMARK_PERIOD == 0:
+            singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
 
-        common.COUNTS[tap_stream_id] += rows_saved
-        common.TIMES[tap_stream_id] += time.time()-start_time
+    common.COUNTS[tap_stream_id] += rows_saved
+    common.TIMES[tap_stream_id] += time.time()-start_time
 
     # clear max pk value and last pk fetched upon successful sync
     singer.clear_bookmark(state, stream['tap_stream_id'], 'max_id_value')

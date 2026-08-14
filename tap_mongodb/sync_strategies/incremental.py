@@ -84,44 +84,49 @@ def sync_collection(client, stream, state, projection):
 
     # query collection
     schema = {"type": "object", "properties": {}}
-    with collection.find(find_filter,
-                         projection,
-                         sort=[(replication_key_name, pymongo.ASCENDING)]) as cursor:
-        rows_saved = 0
-        
-        start_time = time.time()
 
-        for row in cursor:
-            schema_build_start_time = time.time()
-            if common.row_to_schema(schema, row):
-                singer.write_message(singer.SchemaMessage(
-                    stream=common.calculate_destination_stream_name(stream),
-                    schema=schema,
-                    key_properties=['_id']))
-                common.SCHEMA_COUNT[tap_stream_id] += 1
-            common.SCHEMA_TIMES[tap_stream_id] += time.time() - schema_build_start_time
+    def build_cursor():
+        return collection.find(find_filter,
+                               projection,
+                               sort=[(replication_key_name, pymongo.ASCENDING)])
 
+    rows_saved = 0
 
-            record_message = common.row_to_singer_record(stream,
-                                                         row,
-                                                         stream_version,
-                                                          utils.now())
+    start_time = time.time()
 
-            # gen_schema = common.row_to_schema_message(schema, record_message.record, row)
-            # if DeepDiff(schema, gen_schema, ignore_order=True) != {}:
-            #   emit gen_schema
-            #   schema = gen_schema
-            singer.write_message(record_message)
-            rows_saved += 1
-
-            update_bookmark(row, state, tap_stream_id, replication_key_name)
-
-            if rows_saved % common.UPDATE_BOOKMARK_PERIOD == 0:
-                singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+    for row in common.fetch_rows_with_invalid_bson_retry(
+            build_cursor, tap_stream_id, replication_key_name,
+            stream_state.get('replication_key_value')):
+        schema_build_start_time = time.time()
+        if common.row_to_schema(schema, row):
+            singer.write_message(singer.SchemaMessage(
+                stream=common.calculate_destination_stream_name(stream),
+                schema=schema,
+                key_properties=['_id']))
+            common.SCHEMA_COUNT[tap_stream_id] += 1
+        common.SCHEMA_TIMES[tap_stream_id] += time.time() - schema_build_start_time
 
 
-        common.COUNTS[tap_stream_id] += rows_saved
-        common.TIMES[tap_stream_id] += time.time()-start_time
+        record_message = common.row_to_singer_record(stream,
+                                                     row,
+                                                     stream_version,
+                                                      utils.now())
+
+        # gen_schema = common.row_to_schema_message(schema, record_message.record, row)
+        # if DeepDiff(schema, gen_schema, ignore_order=True) != {}:
+        #   emit gen_schema
+        #   schema = gen_schema
+        singer.write_message(record_message)
+        rows_saved += 1
+
+        update_bookmark(row, state, tap_stream_id, replication_key_name)
+
+        if rows_saved % common.UPDATE_BOOKMARK_PERIOD == 0:
+            singer.write_message(singer.StateMessage(value=copy.deepcopy(state)))
+
+
+    common.COUNTS[tap_stream_id] += rows_saved
+    common.TIMES[tap_stream_id] += time.time()-start_time
 
     singer.write_message(activate_version_message)
 

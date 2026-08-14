@@ -137,10 +137,8 @@ def sync_collection(client, stream, state, stream_projection, max_oplog_ts=None)
 
     projection = transform_projection(stream_projection)
 
-    oplog_replay = stream_projection is None
-
-    LOGGER.info('Querying %s with:\n\tFind Parameters: %s\n\tProjection: %s\n\toplog_replay: %s',
-                tap_stream_id, oplog_query, projection, oplog_replay)
+    LOGGER.info('Querying %s with:\n\tFind Parameters: %s\n\tProjection: %s',
+                tap_stream_id, oplog_query, projection)
 
     update_buffer = set()
     schema = {"type": "object", "properties": {}}
@@ -150,8 +148,7 @@ def sync_collection(client, stream, state, stream_projection, max_oplog_ts=None)
     with client.local.oplog.rs.find(
             oplog_query,
             projection,
-            sort=[('$natural', pymongo.ASCENDING)],
-            oplog_replay=oplog_replay
+            sort=[('$natural', pymongo.ASCENDING)]
     ) as cursor:
         for row in cursor:
             # assertions that mongo is respecing the ts query and sort order

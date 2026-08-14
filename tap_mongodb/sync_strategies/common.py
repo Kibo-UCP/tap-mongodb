@@ -13,6 +13,8 @@ from terminaltables import AsciiTable
 import pytz
 import tzlocal
 
+LOGGER = singer.get_logger()
+
 INCLUDE_SCHEMAS_IN_DESTINATION_STREAM_NAME = False
 UPDATE_BOOKMARK_PERIOD = 1000
 COUNTS = {}
@@ -96,10 +98,32 @@ def string_to_class(str_value, type_value):
                                                  .format(type_value))
 
 def safe_transform_datetime(value, path):
+    # NB: With DatetimeConversion.DATETIME_CLAMP, pymongo decodes
+    # out-of-range BSON datetimes (e.g. year 0) as datetime.min instead of
+    # raising InvalidBSON. Re-emit that sentinel as the original year-0
+    # string for data fidelity. This must run on the raw decoded value,
+    # before any timezone localization (which would shift it by the local
+    # UTC offset).
+    if (value.tzinfo is None
+            and value.year == 1 and value.month == 1 and value.day == 1
+            and value.hour == 0 and value.minute == 0 and value.second == 0
+            and value.microsecond == 0):
+        return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}Z".format(value.year - 1,
+                                                                          value.month,
+                                                                          value.day,
+                                                                          value.hour,
+                                                                          value.minute,
+                                                                          value.second,
+                                                                          value.microsecond)
     timezone = tzlocal.get_localzone()
     try:
-        local_datetime = timezone.localize(value)
-        utc_datetime = local_datetime.astimezone(pytz.UTC)
+        if value.tzinfo is not None:
+            # Defensive: if tz_aware decoding is ever enabled upstream,
+            # pytz.localize() would raise on an already-aware datetime.
+            utc_datetime = value.astimezone(pytz.UTC)
+        else:
+            local_datetime = timezone.localize(value)
+            utc_datetime = local_datetime.astimezone(pytz.UTC)
     except Exception as ex:
         if str(ex) == "year is out of range" and value.year == 0:
             # NB: Since datetimes are persisted as strings, it doesn't
@@ -117,6 +141,34 @@ def safe_transform_datetime(value, path):
             ".".join(map(str, path)),
             value)) from ex
     return utils.strftime(utc_datetime)
+
+def fetch_rows_with_invalid_bson_retry(build_cursor, tap_stream_id,
+                                       bookmark_name, bookmark_value):
+    """Yield rows from a pymongo cursor, retrying once on InvalidBSON.
+
+    Defense-in-depth: DatetimeConversion.DATETIME_CLAMP should already
+    prevent BSON decode errors, so this is a safety net. On a decode
+    failure we log CRITICAL with the stream and bookmark context, then
+    rebuild the cursor once via build_cursor() (the query filter already
+    resumes from the last bookmark). The offending row's _id can never be
+    known — it failed to decode — so the retry may fail again; on a second
+    failure we re-raise so the pipeline fails visibly. No row is ever
+    silently dropped.
+    """
+    for attempt in (1, 2):
+        cursor = build_cursor()
+        try:
+            for row in cursor:
+                yield row
+            return
+        except bson.errors.InvalidBSON as err:
+            LOGGER.critical('InvalidBSON decoding stream %s near bookmark %s=%r, '
+                            'attempt %d/2. Likely an out-of-range (year-0) '
+                            'datetime. %s',
+                            tap_stream_id, bookmark_name, bookmark_value,
+                            attempt, err)
+            if attempt == 2:
+                raise
 
 # pylint: disable=too-many-return-statements,too-many-branches
 def transform_value(value, path):
