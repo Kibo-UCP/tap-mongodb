@@ -100,21 +100,15 @@ def string_to_class(str_value, type_value):
 def safe_transform_datetime(value, path):
     # NB: With DatetimeConversion.DATETIME_CLAMP, pymongo decodes
     # out-of-range BSON datetimes (e.g. year 0) as datetime.min instead of
-    # raising InvalidBSON. Re-emit that sentinel as the original year-0
-    # string for data fidelity. This must run on the raw decoded value,
+    # raising InvalidBSON. Emit it as 0001-01-01 (not year 0): BigQuery
+    # rejects timestamps before year 1. This must run on the raw decoded value,
     # before any timezone localization (which would shift it by the local
     # UTC offset).
     if (value.tzinfo is None
             and value.year == 1 and value.month == 1 and value.day == 1
             and value.hour == 0 and value.minute == 0 and value.second == 0
             and value.microsecond == 0):
-        return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}.{:06d}Z".format(value.year - 1,
-                                                                          value.month,
-                                                                          value.day,
-                                                                          value.hour,
-                                                                          value.minute,
-                                                                          value.second,
-                                                                          value.microsecond)
+        return "0001-01-01T00:00:00.000000Z"
     timezone = tzlocal.get_localzone()
     try:
         if value.tzinfo is not None:

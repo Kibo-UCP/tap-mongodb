@@ -33,16 +33,16 @@ class FlakyCursor:
 
 
 class TestClampedYearZeroDatetime(unittest.TestCase):
-    def test_safe_transform_datetime_emits_year0_for_clamped_min(self):
+    def test_safe_transform_datetime_emits_year1_for_clamped_min(self):
         # DATETIME_CLAMP decodes a year-0 BSON datetime as naive datetime.min
         clamped = datetime.datetime.min
         result = common.safe_transform_datetime(clamped, ['created'])
-        self.assertEqual(result, '0000-01-01T00:00:00.000000Z')
+        self.assertEqual(result, '0001-01-01T00:00:00.000000Z')
 
-    def test_transform_value_emits_year0_for_clamped_min(self):
+    def test_transform_value_emits_year1_for_clamped_min(self):
         row = {'created': datetime.datetime.min}
         out = {k: common.transform_value(v, [k]) for k, v in row.items()}
-        self.assertEqual(out['created'], '0000-01-01T00:00:00.000000Z')
+        self.assertEqual(out['created'], '0001-01-01T00:00:00.000000Z')
 
     def test_transform_value_handles_normal_datetime(self):
         normal = datetime.datetime(2020, 6, 15, 12, 0, 0, 123456)
